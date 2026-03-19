@@ -2,7 +2,7 @@
 
 Human judgment as on-chain infrastructure for [ERC-8183 Agentic Commerce](https://eips.ethereum.org/EIPS/eip-8183).
 
-Four contracts that plug into the ERC-8183 job lifecycle, adding human oversight to autonomous agent transactions.
+Five contracts that plug into the ERC-8183 job lifecycle, adding human oversight to autonomous agent transactions.
 
 ## Contracts
 
@@ -58,6 +58,33 @@ A non-transferable ERC-721 that attests an agent consistently passes human evalu
 - `getAttestation(agent, domain)` — public verification
 - `revoke(tokenId)` — remove if quality degrades
 
+### TasteHookRouter
+
+**Chain multiple hooks on a single job.**
+
+ERC-8183 allows one hook per job. The router IS that one hook, but internally delegates to an ordered list of sub-hooks. Each sub-hook is registered with the selectors it cares about — so you can combine a gatekeeper (on `fund`), an escalation hook (on `reject`), and any third-party hook on the same job.
+
+- `addHook(address, selectors)` — add a sub-hook (empty selectors = fire on all actions)
+- `removeLastHook()` — remove the last sub-hook
+- `getHooks()` — list all registered sub-hooks
+- ERC-165 verification — rejects contracts that don't implement `IACPHook`
+
+```solidity
+// Deploy router
+TasteHookRouter router = new TasteHookRouter(agenticCommerce, owner);
+
+// Add gatekeeper on fund + setBudget
+router.addHook(gatekeeperHook, [fundSelector, setBudgetSelector]);
+
+// Add escalation on reject
+router.addHook(escalationHook, [rejectSelector]);
+
+// Agent uses router as its single hook
+ac.createJob(provider, evaluator, expiry, description, address(router));
+```
+
+**Important:** Sub-hooks must have their `jobManager` set to the router address (not AgenticCommerce), because the router is the contract calling them.
+
 ## Deployed Addresses (Base Sepolia)
 
 | Contract | Address |
@@ -88,7 +115,7 @@ All hooks implement `IACPHook` and are fully compatible with any ERC-8183 `Agent
 ## Security
 
 - All contracts use `Ownable2Step` (prevents accidental ownership transfer)
-- 55 tests covering access control, trustless ownership, auto-approve, and full lifecycle
+- 69 tests covering access control, trustless ownership, auto-approve, hook routing, and full lifecycle
 - Audited with Semgrep `p/smart-contracts` — 50 rules, 0 findings
 - Gatekeeper: per-job owner from `optParams` — contract admin cannot approve/deny jobs
 - Escalation: `onlyJobManager` enforced on hook callbacks
