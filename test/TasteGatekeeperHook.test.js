@@ -23,7 +23,7 @@ describe("TasteGatekeeperHook", function () {
 
     // Deploy gatekeeper hook (admin = Taste, auto-approve below 5 USDC)
     const Hook = await ethers.getContractFactory("TasteGatekeeperHook");
-    hook = await Hook.deploy(await ac.getAddress(), admin.address, 5n * ONE_USDC);
+    hook = await Hook.deploy(await ac.getAddress(), admin.address, 5n * ONE_USDC, 1800n);
     await hook.waitForDeployment();
 
     // Whitelist hook

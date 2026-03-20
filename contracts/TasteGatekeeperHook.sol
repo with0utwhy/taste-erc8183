@@ -47,6 +47,7 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
         address jobOwner;     // The person who can approve/deny THIS job
         string reason;
         uint256 reviewedAt;
+        uint256 createdAt;    // When the review was registered
     }
 
     mapping(uint256 => Review) public reviews;
@@ -56,6 +57,9 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
 
     /// @dev Jobs under this budget (in token units) are auto-approved. 0 = all need review.
     uint256 public autoApproveBelow;
+
+    /// @dev Auto-deny timeout in seconds. 0 = no timeout.
+    uint256 public denyTimeout;
 
     // ── Errors ──
 
@@ -68,9 +72,10 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
 
     // ── Constructor ──
 
-    constructor(address jobManager_, address admin_, uint256 autoApproveBelow_) payable Ownable(admin_) {
+    constructor(address jobManager_, address admin_, uint256 autoApproveBelow_, uint256 denyTimeout_) payable Ownable(admin_) {
         jobManager = jobManager_;
         autoApproveBelow = autoApproveBelow_;
+        denyTimeout = denyTimeout_;
     }
 
     // ── Admin (Taste — only threshold management, NOT job approval) ──
@@ -79,10 +84,14 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
         autoApproveBelow = threshold;
     }
 
+    function setDenyTimeout(uint256 timeout) external onlyOwner {
+        denyTimeout = timeout;
+    }
+
     // ── IACPHook ──
 
-    /// @dev beforeAction — gate fund() until the job's owner approves
-    function beforeAction(uint256 jobId, bytes4 selector, bytes calldata) external view override {
+    /// @dev beforeAction — gate fund() until the job's owner approves or timeout auto-denies
+    function beforeAction(uint256 jobId, bytes4 selector, bytes calldata) external override {
         if (msg.sender != jobManager) revert OnlyJobManager();
 
         // Only gate fund()
@@ -95,9 +104,21 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
         if (review.status == ApprovalStatus.Approved) return;
         if (review.status == ApprovalStatus.Denied) revert JobDeniedByHuman();
 
-        // Pending — must have budget registered (from setBudget)
+        // Pending — check timeout
         if (review.status == ApprovalStatus.Pending) {
             if (review.budget > 0) {
+                // Auto-deny if timeout exceeded
+                if (denyTimeout > 0) {
+                    if (review.createdAt > 0) {
+                        if (block.timestamp > review.createdAt + denyTimeout) {
+                            review.status = ApprovalStatus.Denied;
+                            review.reason = "Auto-denied: approval timeout";
+                            review.reviewedAt = block.timestamp;
+                            emit JobDenied(jobId, address(0), "Auto-denied: approval timeout");
+                            revert JobDeniedByHuman();
+                        }
+                    }
+                }
                 revert AwaitingHumanApproval();
             }
         }
@@ -115,14 +136,27 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
             (address caller, uint256 amount, bytes memory optParams) = abi.decode(data, (address, uint256, bytes));
 
             Review storage review = reviews[jobId];
+
+            // If already approved, reset approval when budget increases (prevents budget escalation after approval)
+            if (review.status == ApprovalStatus.Approved) {
+                if (amount > review.budget) {
+                    review.status = ApprovalStatus.Pending;
+                    review.reason = "";
+                    review.reviewedAt = 0;
+                }
+            }
+
             review.budget = amount;
             review.client = caller;
+            if (review.createdAt == 0) review.createdAt = block.timestamp;
 
-            // Extract job owner from optParams (agent passes abi.encode(ownerAddress))
-            if (optParams.length >= 32) {
-                address jobOwner = abi.decode(optParams, (address));
-                if (jobOwner != address(0)) {
-                    review.jobOwner = jobOwner;
+            // Extract job owner from optParams — only set once (prevents owner swap after approval)
+            if (review.jobOwner == address(0)) {
+                if (optParams.length >= 32) {
+                    address jobOwner = abi.decode(optParams, (address));
+                    if (jobOwner != address(0)) {
+                        review.jobOwner = jobOwner;
+                    }
                 }
             }
 
@@ -146,6 +180,7 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
         }
 
         // On createJob: capture client as fallback owner
+        // data = abi.encode(client, provider, evaluator) per AgenticCommerce._afterHook
         if (selector == bytes4(keccak256("createJob(address,address,uint256,string,address)"))) {
             (address client, , ) = abi.decode(data, (address, address, address));
             if (reviews[jobId].jobOwner == address(0)) {

@@ -12,9 +12,12 @@ Five contracts that plug into the ERC-8183 job lifecycle, adding human oversight
 
 An `IACPHook` that blocks `fund()` until a designated human approves. The agent passes the approver's address in `optParams` — only that address can call `approveJob()`. Fully trustless: Taste (the contract admin) cannot approve or deny jobs.
 
-- `beforeAction(fund)` — reverts with `AwaitingHumanApproval` until approved
-- `afterAction(setBudget)` — extracts approver from `optParams`, emits `GatekeeperReviewRequested`
-- Auto-approve threshold for small transactions (configurable)
+- `beforeAction(fund)` -- reverts with `AwaitingHumanApproval` until approved, auto-denies after timeout
+- `afterAction(setBudget)` -- extracts approver from `optParams`, emits `GatekeeperReviewRequested`
+- Auto-approve threshold for small transactions (constructor arg)
+- Auto-deny timeout for unresponsive owners (constructor arg, default 30 min)
+- Budget increase after approval resets approval status (prevents escalation)
+- Job owner locked after first set (prevents owner swap)
 
 ```solidity
 // Agent code: create job with gatekeeper hook
@@ -115,10 +118,14 @@ All hooks implement `IACPHook` and are fully compatible with any ERC-8183 `Agent
 ## Security
 
 - All contracts use `Ownable2Step` (prevents accidental ownership transfer)
-- 69 tests covering access control, trustless ownership, auto-approve, hook routing, and full lifecycle
-- Audited with Semgrep `p/smart-contracts` — 50 rules, 0 findings
-- Gatekeeper: per-job owner from `optParams` — contract admin cannot approve/deny jobs
+- 55 tests covering access control, trustless ownership, auto-approve, budget escalation protection, and full lifecycle
+- Audited with Semgrep `p/smart-contracts` -- 50 rules, 0 findings
+- Gatekeeper: per-job owner from `optParams` -- contract admin cannot approve/deny jobs
+- Gatekeeper: budget increase after approval resets approval status (prevents escalation attack)
+- Gatekeeper: job owner locked after first set (prevents owner swap attack)
+- Gatekeeper: configurable auto-deny timeout (default 30 min)
 - Escalation: `onlyJobManager` enforced on hook callbacks
+- Payable constructors, nested ifs (gas optimized per Semgrep recommendations)
 
 ## Quick Start
 
