@@ -11,36 +11,22 @@ async function main() {
     process.exit(1);
   }
 
-  // TasteGatekeeperHook
-  console.log("Deploying TasteGatekeeperHook...");
   const autoApproveBelow = 5_000_000n; // 5 USDC (6 decimals)
+  const denyTimeout = 1800n; // 30 minutes
+
+  console.log("Deploying TasteGatekeeperHook...");
   const GK = await ethers.getContractFactory("TasteGatekeeperHook");
-  const gk = await GK.deploy(JOB_MANAGER, deployer.address, autoApproveBelow);
+  const gk = await GK.deploy(JOB_MANAGER, deployer.address, autoApproveBelow, denyTimeout);
   await gk.waitForDeployment();
-  console.log("  TasteGatekeeperHook:", await gk.getAddress());
+  const addr = await gk.getAddress();
 
-  // TasteEscalationHook
-  console.log("Deploying TasteEscalationHook...");
-  const Hook = await ethers.getContractFactory("TasteEscalationHook");
-  const hook = await Hook.deploy(JOB_MANAGER, deployer.address);
-  await hook.waitForDeployment();
-  console.log("  TasteEscalationHook:", await hook.getAddress());
-
-  // TasteContentCertificate
-  console.log("Deploying TasteContentCertificate...");
-  const Cert = await ethers.getContractFactory("TasteContentCertificate");
-  const cert = await Cert.deploy(deployer.address);
-  await cert.waitForDeployment();
-  console.log("  TasteContentCertificate:", await cert.getAddress());
-
-  // TasteBadge
-  console.log("Deploying TasteBadge...");
-  const Badge = await ethers.getContractFactory("TasteBadge");
-  const badge = await Badge.deploy(deployer.address);
-  await badge.waitForDeployment();
-  console.log("  TasteBadge:", await badge.getAddress());
-
-  console.log("\nDone! Ask the AgenticCommerce admin to whitelist the hooks.");
+  console.log("\nDeployed!");
+  console.log("  Address:", addr);
+  console.log("  Owner:", deployer.address);
+  console.log("  Auto-approve below: $5 USDC");
+  console.log("  Auto-deny timeout: 30 minutes");
+  console.log("\nAsk the AgenticCommerce admin to whitelist:");
+  console.log(`  setHookWhitelist("${addr}", true)`);
 }
 
 main().catch((error) => {

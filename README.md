@@ -1,133 +1,78 @@
-# Taste ERC-8183 Hooks
+# Taste Gatekeeper Hook for ERC-8183
 
-Human judgment as on-chain infrastructure for [ERC-8183 Agentic Commerce](https://eips.ethereum.org/EIPS/eip-8183).
+Human spending approval for autonomous AI agents. Built on [ERC-8183 Agentic Commerce](https://eips.ethereum.org/EIPS/eip-8183).
 
-Five contracts that plug into the ERC-8183 job lifecycle, adding human oversight to autonomous agent transactions.
+## What It Does
 
-## Contracts
+An `IACPHook` that blocks `fund()` until a designated human approves. Your agent creates jobs freely, but money doesn't move without your permission.
 
-### TasteGatekeeperHook
+- Agent passes the approver's wallet address in `optParams`
+- Only that address can call `approveJob()` -- fully trustless
+- The contract admin (Taste) cannot approve or deny jobs
+- Auto-approve threshold for small transactions
+- Auto-deny timeout for unresponsive owners
 
-**Human spending approval for autonomous agents.**
+## How It Works
 
-An `IACPHook` that blocks `fund()` until a designated human approves. The agent passes the approver's address in `optParams` — only that address can call `approveJob()`. Fully trustless: Taste (the contract admin) cannot approve or deny jobs.
+```
+1. Agent creates job with gatekeeper hook attached
+2. Agent sets budget, passing owner address in optParams
+3. Agent tries to fund() --> BLOCKED
+4. Owner gets notified (Telegram / ntfy)
+5. Owner reviews and approves via MetaMask
+6. Agent retries fund() --> succeeds
+```
 
-- `beforeAction(fund)` -- reverts with `AwaitingHumanApproval` until approved, auto-denies after timeout
-- `afterAction(setBudget)` -- extracts approver from `optParams`, emits `GatekeeperReviewRequested`
-- Auto-approve threshold for small transactions (constructor arg)
-- Auto-deny timeout for unresponsive owners (constructor arg, default 30 min)
-- Budget increase after approval resets approval status (prevents escalation)
-- Job owner locked after first set (prevents owner swap)
+## Agent Code
 
 ```solidity
-// Agent code: create job with gatekeeper hook
+// Create job with gatekeeper hook
 uint256 jobId = ac.createJob(provider, evaluator, expiry, description, gatekeeperHook);
 
 // Pass approver address in optParams
-ac.setBudget(jobId, amount, abi.encode(ownerWallet));
+bytes memory optParams = abi.encode(ownerWallet);
+ac.setBudget(jobId, amount, optParams);
 
 // fund() will revert until ownerWallet calls approveJob()
 // Agent listens for JobApproved event, then retries fund()
 ```
 
-### TasteEscalationHook
+## Security
 
-**Dispute resolution with human arbitration.**
+- `Ownable2Step` -- prevents accidental ownership transfer
+- Per-job owner from `optParams` -- contract admin cannot approve/deny jobs
+- Budget increase after approval resets approval status (prevents escalation attack)
+- Job owner locked after first set (prevents owner swap attack)
+- Configurable auto-deny timeout (constructor arg)
+- Auto-approve threshold for small transactions (constructor arg)
+- Audited with Semgrep `p/smart-contracts` -- 50 rules, 0 findings
+- Payable constructors, nested ifs (gas optimized)
 
-An `IACPHook` that fires after `reject()`, creating an on-chain record that the dispute was escalated to a human expert. Also supports voluntary escalation — an AI evaluator that's unsure can call `requestReview()` to get a human second opinion.
-
-- `afterAction(reject)` — emits `EscalationRequested`, records the dispute
-- `requestReview(jobId, reason)` — voluntary escalation by evaluators
-- `resolveEscalation(jobId, approved, verdict)` — human verdict recorded on-chain
-
-### TasteContentCertificate
-
-**On-chain proof of human content review.**
-
-A registry that records which content has been reviewed and approved by a human expert. Content is identified by `keccak256` hash — the actual content never goes on-chain. Anyone can verify by calling `verify(contentHash)`.
-
-- `issue(contentHash, agent, offeringType, verdict, domain)` — record a review
-- `verify(contentHash)` — check if content was human-reviewed
-- Revocable if content is later found problematic
-- EU AI Act compliance: documented human review with immutable audit trail
-
-### TasteBadge
-
-**Soulbound reputation badge for agents.**
-
-A non-transferable ERC-721 that attests an agent consistently passes human evaluation in a specific domain. One badge per agent per domain.
-
-- `mint(agent, domain, evaluationCount, approvalCount)` — issue badge
-- `getAttestation(agent, domain)` — public verification
-- `revoke(tokenId)` — remove if quality degrades
-
-### TasteHookRouter
-
-**Chain multiple hooks on a single job.**
-
-ERC-8183 allows one hook per job. The router IS that one hook, but internally delegates to an ordered list of sub-hooks. Each sub-hook is registered with the selectors it cares about — so you can combine a gatekeeper (on `fund`), an escalation hook (on `reject`), and any third-party hook on the same job.
-
-- `addHook(address, selectors)` — add a sub-hook (empty selectors = fire on all actions)
-- `removeLastHook()` — remove the last sub-hook
-- `getHooks()` — list all registered sub-hooks
-- ERC-165 verification — rejects contracts that don't implement `IACPHook`
+## Constructor
 
 ```solidity
-// Deploy router
-TasteHookRouter router = new TasteHookRouter(agenticCommerce, owner);
-
-// Add gatekeeper on fund + setBudget
-router.addHook(gatekeeperHook, [fundSelector, setBudgetSelector]);
-
-// Add escalation on reject
-router.addHook(escalationHook, [rejectSelector]);
-
-// Agent uses router as its single hook
-ac.createJob(provider, evaluator, expiry, description, address(router));
+constructor(
+    address jobManager_,       // AgenticCommerce contract address
+    address admin_,            // Hook admin (can change thresholds, NOT approve jobs)
+    uint256 autoApproveBelow_, // Auto-approve threshold in token units (e.g. 5000000 = $5 USDC)
+    uint256 denyTimeout_       // Auto-deny timeout in seconds (e.g. 1800 = 30 minutes)
+)
 ```
 
-**Important:** Sub-hooks must have their `jobManager` set to the router address (not AgenticCommerce), because the router is the contract calling them.
-
-## Deployed Addresses (Base Sepolia)
+## Deployed (Base Sepolia)
 
 | Contract | Address |
 |----------|---------|
 | TasteGatekeeperHook | `0x61aa898Bf8b867D0901E4099585Fe20dce93e25C` |
-| TasteEscalationHook | `0xb96bFC120eeF78b96341167190138Aa88198052B` |
-| TasteContentCertificate | `0xbD4dDF95C63F90671F17AC670Aa127d54cC5fE5a` |
-| TasteBadge | `0x0394164dEdD964c5bC80a869EFDb6682F6bA2304` |
+| AgenticCommerce | `0x33eE7b991Df77266A33099C643aD9087457F8923` |
 
-Used with AgenticCommerce at `0x33eE7b991Df77266A33099C643aD9087457F8923` (Base Sepolia).
+## One-Click Deploy
 
-## How It Works
+No Solidity knowledge needed. Deploy from the browser:
 
-```
-Agent creates job with hook attached
-  |
-  |-- Gatekeeper: blocks fund() until human approves
-  |-- Escalation: records dispute after reject(), routes to human
-  |
-Agent or evaluator completes the job
-  |
-  |-- Content Certificate: on-chain proof of human review
-  |-- Badge: soulbound reputation after consistent approvals
-```
+[humantaste.app/deploy-hooks](https://humantaste.app/deploy-hooks)
 
-All hooks implement `IACPHook` and are fully compatible with any ERC-8183 `AgenticCommerce` deployment.
-
-## Security
-
-- All contracts use `Ownable2Step` (prevents accidental ownership transfer)
-- 55 tests covering access control, trustless ownership, auto-approve, budget escalation protection, and full lifecycle
-- Audited with Semgrep `p/smart-contracts` -- 50 rules, 0 findings
-- Gatekeeper: per-job owner from `optParams` -- contract admin cannot approve/deny jobs
-- Gatekeeper: budget increase after approval resets approval status (prevents escalation attack)
-- Gatekeeper: job owner locked after first set (prevents owner swap attack)
-- Gatekeeper: configurable auto-deny timeout (default 30 min)
-- Escalation: `onlyJobManager` enforced on hook callbacks
-- Payable constructors, nested ifs (gas optimized per Semgrep recommendations)
-
-## Quick Start
+## Quick Start (Developers)
 
 ```bash
 npm install
@@ -135,20 +80,47 @@ npx hardhat compile
 npx hardhat test
 ```
 
-## Deploy
+## Deploy (CLI)
 
 ```bash
 cp .env.example .env
-# Add DEPLOYER_PRIVATE_KEY to .env
+# Add DEPLOYER_PRIVATE_KEY and ERC8183_JOB_MANAGER_ADDRESS
 npx hardhat run scripts/deploy.js --network baseSepolia
+```
+
+## Tests
+
+```
+TasteGatekeeperHook
+  deployment
+    sets jobManager, admin, and threshold
+    supports IACPHook interface
+  trustless ownership -- job owner from optParams
+    extracts owner from setBudget optParams
+    emits GatekeeperReviewRequested with jobOwner
+    falls back to client if no owner in optParams
+  gatekeeper flow -- trustless approval
+    reverts fund() when pending
+    job owner can approve
+    job owner can deny
+    admin (Taste) CANNOT approve jobs
+    random address CANNOT approve jobs
+  auto-approve threshold
+    auto-approves jobs below threshold
+    requires review for jobs at or above threshold
+    admin can change threshold
+  full lifecycle
+    create -> setBudget -> (blocked) -> owner approves -> fund -> submit -> complete
+
+15 passing
 ```
 
 ## Links
 
 - [ERC-8183 Specification](https://eips.ethereum.org/EIPS/eip-8183)
-- [ERC-8183 Reference Implementation](https://github.com/erc-8183/base-contracts)
-- [Taste — Human Judgment for the AI Economy](https://humantaste.app)
-- [Taste Whitepaper](https://humantaste.app/whitepaper)
+- [Taste -- Human Judgment for the AI Economy](https://humantaste.app)
+- [Deploy a Gatekeeper](https://humantaste.app/deploy-hooks)
+- [Gatekeeper Approval Page](https://humantaste.app/gatekeeper)
 - [ERC-8183 Builder Community](https://t.me/erc8183)
 
 ## License
