@@ -9,18 +9,18 @@ import "./interfaces/IACPHook.sol";
  * @title TasteGatekeeperHook
  * @dev ERC-8183 hook that requires human approval before a job can be funded.
  * Fully trustless — the agent passes the approver's address in optParams,
- * and only that address can approve or deny. Taste is notification-only.
+ * and only that address can approve or deny.
  *
  * Flow:
  * 1. Agent creates job with this hook, passing optParams=abi.encode(ownerAddress)
  * 2. Agent sets budget — hook registers the job + owner, emits event
- * 3. Taste server detects event → notifies owner via ntfy/push
- * 4. Agent tries fund() → hook reverts with "Awaiting human approval"
- * 5. Owner opens MetaMask → calls approveJob(jobId) directly on this contract
- * 6. Agent retries fund() → passes → job proceeds
+ * 3. Off-chain service detects GatekeeperReviewRequested event, notifies owner
+ * 4. Agent tries fund() — hook reverts with "Awaiting human approval"
+ * 5. Owner calls approveJob(jobId) directly on this contract
+ * 6. Agent retries fund() — passes — job proceeds
  *
- * The contract owner (Taste) can set the auto-approve threshold but CANNOT
- * approve or deny individual jobs. Only the per-job owner can do that.
+ * The contract admin can set the auto-approve threshold and deny timeout
+ * but CANNOT approve or deny individual jobs. Only the per-job owner can.
  */
 contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
 
