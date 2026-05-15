@@ -112,32 +112,35 @@ describe("TasteGatekeeperHook", function () {
 
   describe("gatekeeper flow — trustless approval", function () {
     it("reverts fund() when pending", async function () {
-      const jobId = await createTestJob(10n * ONE_USDC);
+      const budget = 10n * ONE_USDC;
+      const jobId = await createTestJob(budget);
       await expect(
-        ac.connect(client).fund(jobId, "0x")
+        ac.connect(client).fund(jobId, budget, "0x")
       ).to.be.revertedWithCustomError(hook, "AwaitingHumanApproval");
     });
 
     it("job owner can approve", async function () {
-      const jobId = await createTestJob(10n * ONE_USDC);
+      const budget = 10n * ONE_USDC;
+      const jobId = await createTestJob(budget);
 
       await expect(hook.connect(jobOwner).approveJob(jobId, "Looks good"))
         .to.emit(hook, "JobApproved")
         .withArgs(jobId, jobOwner.address, "Looks good");
 
       // Now fund succeeds
-      await expect(ac.connect(client).fund(jobId, "0x")).to.not.be.reverted;
+      await expect(ac.connect(client).fund(jobId, budget, "0x")).to.not.be.reverted;
     });
 
     it("job owner can deny", async function () {
-      const jobId = await createTestJob(10n * ONE_USDC);
+      const budget = 10n * ONE_USDC;
+      const jobId = await createTestJob(budget);
 
       await expect(hook.connect(jobOwner).denyJob(jobId, "Too expensive"))
         .to.emit(hook, "JobDenied")
         .withArgs(jobId, jobOwner.address, "Too expensive");
 
       await expect(
-        ac.connect(client).fund(jobId, "0x")
+        ac.connect(client).fund(jobId, budget, "0x")
       ).to.be.revertedWithCustomError(hook, "JobDeniedByHuman");
     });
 
@@ -158,16 +161,18 @@ describe("TasteGatekeeperHook", function () {
 
   describe("auto-approve threshold", function () {
     it("auto-approves jobs below threshold", async function () {
-      const jobId = await createTestJob(3n * ONE_USDC);
+      const budget = 3n * ONE_USDC;
+      const jobId = await createTestJob(budget);
       const review = await hook.getReview(jobId);
       expect(review.status).to.equal(1); // Approved
-      await expect(ac.connect(client).fund(jobId, "0x")).to.not.be.reverted;
+      await expect(ac.connect(client).fund(jobId, budget, "0x")).to.not.be.reverted;
     });
 
     it("requires review for jobs at or above threshold", async function () {
-      const jobId = await createTestJob(5n * ONE_USDC);
+      const budget = 5n * ONE_USDC;
+      const jobId = await createTestJob(budget);
       await expect(
-        ac.connect(client).fund(jobId, "0x")
+        ac.connect(client).fund(jobId, budget, "0x")
       ).to.be.revertedWithCustomError(hook, "AwaitingHumanApproval");
     });
 
@@ -177,19 +182,51 @@ describe("TasteGatekeeperHook", function () {
     });
   });
 
+  describe("regression — ACP v2 fund selector", function () {
+    it("gates v2 fund(uint256,uint256,bytes) and ignores v1 fund(uint256,bytes)", async function () {
+      const budget = 10n * ONE_USDC;
+      const jobId = await createTestJob(budget);
+
+      // Impersonate the AgenticCommerce contract so we can call beforeAction directly
+      // with arbitrary selectors. Without this we can only test selectors via the mock
+      // contract, which itself now only exposes v2.
+      const acAddr = await ac.getAddress();
+      await ethers.provider.send("hardhat_impersonateAccount", [acAddr]);
+      await ethers.provider.send("hardhat_setBalance", [acAddr, "0x1000000000000000000"]);
+      const acSigner = await ethers.getSigner(acAddr);
+
+      const v1Selector = ethers.id("fund(uint256,bytes)").slice(0, 10);
+      const v2Selector = ethers.id("fund(uint256,uint256,bytes)").slice(0, 10);
+      expect(v1Selector).to.not.equal(v2Selector);
+
+      // v1: pre-fix bug condition — hook should pass through without gating.
+      // (If hook still hardcoded v1, this would silently succeed on every v2 fund
+      // tx in production, defeating the gate entirely.)
+      await expect(hook.connect(acSigner).beforeAction(jobId, v1Selector, "0x"))
+        .to.not.be.reverted;
+
+      // v2: hook should reject because the job is still pending review.
+      await expect(hook.connect(acSigner).beforeAction(jobId, v2Selector, "0x"))
+        .to.be.revertedWithCustomError(hook, "AwaitingHumanApproval");
+
+      await ethers.provider.send("hardhat_stopImpersonatingAccount", [acAddr]);
+    });
+  });
+
   describe("full lifecycle", function () {
     it("create → setBudget → (blocked) → owner approves → fund → submit → complete", async function () {
-      const jobId = await createTestJob(10n * ONE_USDC);
+      const budget = 10n * ONE_USDC;
+      const jobId = await createTestJob(budget);
 
       // Blocked
-      await expect(ac.connect(client).fund(jobId, "0x"))
+      await expect(ac.connect(client).fund(jobId, budget, "0x"))
         .to.be.revertedWithCustomError(hook, "AwaitingHumanApproval");
 
       // Job owner approves (not Taste!)
       await hook.connect(jobOwner).approveJob(jobId, "Approved by agent owner");
 
       // Fund succeeds
-      await ac.connect(client).fund(jobId, "0x");
+      await ac.connect(client).fund(jobId, budget, "0x");
 
       // Submit
       const deliverable = ethers.keccak256(ethers.toUtf8Bytes("final deliverable"));

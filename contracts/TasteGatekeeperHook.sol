@@ -94,8 +94,8 @@ contract TasteGatekeeperHook is IACPHook, ERC165, Ownable2Step {
     function beforeAction(uint256 jobId, bytes4 selector, bytes calldata) external override {
         if (msg.sender != jobManager) revert OnlyJobManager();
 
-        // Only gate fund()
-        if (selector != bytes4(keccak256("fund(uint256,bytes)"))) {
+        // Only gate fund() — ACP v2 signature: fund(jobId, expectedBudget, optParams)
+        if (selector != bytes4(keccak256("fund(uint256,uint256,bytes)"))) {
             return;
         }
 

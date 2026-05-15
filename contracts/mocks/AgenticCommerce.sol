@@ -62,6 +62,7 @@ contract AgenticCommerce is Initializable, AccessControlUpgradeable, ReentrancyG
     error ProviderNotSet();
     error FeesTooHigh();
     error HookNotWhitelisted();
+    error BudgetMismatch();
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() payable { _disableInitializers(); }
@@ -151,15 +152,20 @@ contract AgenticCommerce is Initializable, AccessControlUpgradeable, ReentrancyG
         _afterHook(job.hook, jobId, msg.sig, data);
     }
 
-    function fund(uint256 jobId, bytes calldata optParams) external nonReentrant {
+    // ACP v2 signature: fund(jobId, expectedBudget, optParams). The expectedBudget
+    // argument lets the client reject if the provider has changed budget between
+    // the budget_set event and the client signing the funding tx. Reverts with
+    // BudgetMismatch when the on-chain budget doesn't equal the caller's expectation.
+    function fund(uint256 jobId, uint256 expectedBudget, bytes calldata optParams) external nonReentrant {
         Job storage job = jobs[jobId];
         if (job.id == 0) revert InvalidJob();
         if (job.status != JobStatus.Open) revert WrongStatus();
         if (msg.sender != job.client) revert Unauthorized();
         if (job.provider == address(0)) revert ProviderNotSet();
         if (block.timestamp >= job.expiredAt) revert WrongStatus();
+        if (expectedBudget != job.budget) revert BudgetMismatch();
 
-        bytes memory data = abi.encode(msg.sender, optParams);
+        bytes memory data = abi.encode(msg.sender, expectedBudget, optParams);
         _beforeHook(job.hook, jobId, msg.sig, data);
         job.status = JobStatus.Funded;
         if (job.budget > 0) paymentToken.safeTransferFrom(job.client, address(this), job.budget);
