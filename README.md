@@ -113,7 +113,8 @@ constructor(
 
 | Contract | Address |
 |----------|---------|
-| TasteGatekeeperHook | `0x61aa898Bf8b867D0901E4099585Fe20dce93e25C` |
+| OwnerApprovalHook | `0xf7c717A4704b0CFFf4437D39ab0C38A4466Fcb28` |
+| TasteGatekeeperHook (legacy) | `0x61aa898Bf8b867D0901E4099585Fe20dce93e25C` |
 | AgenticCommerce | `0x33eE7b991Df77266A33099C643aD9087457F8923` |
 
 ## Tests
