@@ -2,7 +2,7 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
 // OwnerApprovalHook — conformant ERC-8183 Profile-A hook. Approval is an
-// off-chain EIP-191 signature over the job terms, presented in fund optParams.
+// off-chain EIP-712 typed-data signature over the job terms, presented in fund optParams.
 describe("OwnerApprovalHook", function () {
   const JOB = 1n;
   const AMOUNT = 1000n;
@@ -93,6 +93,13 @@ describe("OwnerApprovalHook", function () {
     it("allows funding with a valid owner signature", async function () {
       const sig = await signApproval(owner, JOB, AMOUNT, FUTURE);
       await expect(core.fund(hookAddr, JOB, client.address, fundParams(sig, FUTURE))).to.not.be.reverted;
+    });
+
+    it("rejects re-funding the same job (approval consumed in _postFund)", async function () {
+      const sig = await signApproval(owner, JOB, AMOUNT, FUTURE);
+      await core.fund(hookAddr, JOB, client.address, fundParams(sig, FUTURE)); // first fund consumes the approval
+      await expect(core.fund(hookAddr, JOB, client.address, fundParams(sig, FUTURE)))
+        .to.be.revertedWithCustomError(hook, "ApprovalAlreadyUsed");
     });
 
     it("accepts a smart-contract wallet owner (ERC-1271)", async function () {

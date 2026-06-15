@@ -32,18 +32,23 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///      future; a missing or invalid signature reverts.
 ///
 /// TRUST MODEL
-///   - No approval state and no mutating functions outside the ERC-8183
-///     callbacks; no admin, no upgradeability. Only a valid signature from the
-///     recorded owner — an EOA (ECDSA) or a smart-contract wallet (ERC-1271) —
-///     can unblock funding.
+///   - Minimal per-job state (owner, budget, funded flag); no admin, no
+///     upgradeability, and no mutating functions outside the ERC-8183 callbacks.
+///     Only a valid signature from the recorded owner — an EOA (ECDSA) or a
+///     smart-contract wallet (ERC-1271) — can unblock funding.
 ///   - The owner is locked on first `setBudget` (no later swap). The budget is
 ///     bound into the signed payload, so raising it invalidates a prior approval
 ///     (no escalation). The EIP-712 domain binds the signature to this hook on
-///     this chain, and `jobId` binds it to one job (no replay).
-///   - Denial needs no transaction: an unsigned job can never be funded, and the
-///     deadline bounds each signature. The deadline must also fall within a
-///     bounded window (MAX_APPROVAL_WINDOW), so an approval cannot accidentally
-///     be made effectively non-expiring.
+///     this chain; `jobId` binds it to one job (no cross-job replay); and the job
+///     is flagged funded in `_postFund`, so the same approval cannot be replayed
+///     even if the core permitted a second `fund()` (no same-job replay).
+///   - The deadline is inclusive (valid while `block.timestamp <= deadline`) and
+///     bounded: it must be in the future and within `MAX_APPROVAL_WINDOW`, so an
+///     approval can't accidentally be made effectively non-expiring. Denial needs
+///     no transaction — an unsigned job can never be funded.
+///   - Owner type: intended for an EOA or an audited smart-contract wallet. A
+///     malicious owner contract's `isValidSignature` could waste gas or revert,
+///     but that only blocks funding of that owner's own job (self-inflicted).
 contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
     /// @notice Per-job approval context.
     struct Job {
@@ -52,6 +57,15 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
     }
 
     mapping(uint256 => Job) private _jobs;
+
+    /// @notice Jobs already funded — an approval signature can't be replayed once
+    ///         consumed, even if the core were ever to permit a second fund().
+    mapping(uint256 => bool) private _funded;
+
+    /// @notice ERC-8183 selectors this hook gates. Precomputed so requiredSelectors()
+    ///         and the inherited router don't recompute keccak256 at runtime.
+    bytes4 private constant SEL_SET_BUDGET = bytes4(keccak256("setBudget(uint256,address,uint256,bytes)"));
+    bytes4 private constant SEL_FUND = bytes4(keccak256("fund(uint256,uint256,bytes)"));
 
     /// @notice EIP-712 type hash for the owner's approval payload.
     bytes32 private constant APPROVAL_TYPEHASH =
@@ -67,6 +81,7 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
     error OwnerNotRegistered();
     error ApprovalExpired();
     error ApprovalWindowTooLong();
+    error ApprovalAlreadyUsed();
     error InvalidApprovalSignature();
 
     /// @param erc8183Contract_ The ERC-8183 core contract (or MultiHookRouter) authorized to call this hook.
@@ -77,8 +92,8 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
     ///      selectors must be routed to this hook together.
     function requiredSelectors() external pure returns (bytes4[] memory selectors) {
         selectors = new bytes4[](2);
-        selectors[0] = bytes4(keccak256("setBudget(uint256,address,uint256,bytes)"));
-        selectors[1] = bytes4(keccak256("fund(uint256,uint256,bytes)"));
+        selectors[0] = SEL_SET_BUDGET;
+        selectors[1] = SEL_FUND;
     }
 
     /// @dev Register the owner once and record the budget; signal off-chain approvers.
@@ -103,6 +118,12 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
         emit ApprovalRequested(jobId, job.owner, caller, amount);
     }
 
+    /// @dev Mark the job funded so its approval signature can't be replayed,
+    ///      even if the core were to allow a second fund() on the same job.
+    function _postFund(uint256 jobId, address, /* caller */ bytes memory /* optParams */) internal override {
+        _funded[jobId] = true;
+    }
+
     /// @dev Block funding unless a valid, unexpired owner signature is supplied.
     function _preFund(
         uint256 jobId,
@@ -113,6 +134,7 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
 
         address owner = job.owner;
         if (owner == address(0)) revert OwnerNotRegistered();
+        if (_funded[jobId]) revert ApprovalAlreadyUsed();
 
         (bytes memory signature, uint256 deadline) = abi.decode(optParams, (bytes, uint256));
         if (block.timestamp > deadline) revert ApprovalExpired();

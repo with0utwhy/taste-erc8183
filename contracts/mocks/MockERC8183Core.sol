@@ -26,8 +26,11 @@ contract MockERC8183Core is ERC8183 {
         IERC8183Hook(hook).afterAction(jobId, SEL_SET_BUDGET, abi.encode(caller, token, amount, optParams));
     }
 
-    /// @dev Mirrors the core's `_beforeHook` for fund: data = abi.encode(caller, optParams).
+    /// @dev Mirrors the core's fund: pre-hook (gate) then post-hook (consume),
+    ///      both with data = abi.encode(caller, optParams), as the real core does.
     function fund(address hook, uint256 jobId, address caller, bytes calldata optParams) external {
-        IERC8183Hook(hook).beforeAction(jobId, SEL_FUND, abi.encode(caller, optParams));
+        bytes memory data = abi.encode(caller, optParams);
+        IERC8183Hook(hook).beforeAction(jobId, SEL_FUND, data);
+        IERC8183Hook(hook).afterAction(jobId, SEL_FUND, data);
     }
 }
