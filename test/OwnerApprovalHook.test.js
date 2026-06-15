@@ -19,16 +19,19 @@ describe("OwnerApprovalHook", function () {
   let core, hook, hookAddr, chainId;
   let deployer, owner, client, stranger;
 
-  // Mirror the hook's digest: keccak256(abi.encode(chainid,this,jobId,budget,deadline)),
-  // signed as an EIP-191 personal message.
+  // Sign the hook's EIP-712 Approval payload under its domain.
+  const APPROVAL_TYPES = {
+    Approval: [
+      { name: "jobId", type: "uint256" },
+      { name: "budget", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+  };
+  function domain() {
+    return { name: "OwnerApprovalHook", version: "1", chainId, verifyingContract: hookAddr };
+  }
   async function signApproval(signer, jobId, budget, deadline) {
-    const inner = ethers.keccak256(
-      coder.encode(
-        ["uint256", "address", "uint256", "uint256", "uint256"],
-        [chainId, hookAddr, jobId, budget, deadline]
-      )
-    );
-    return signer.signMessage(ethers.getBytes(inner));
+    return signer.signTypedData(domain(), APPROVAL_TYPES, { jobId, budget, deadline });
   }
 
   const ownerParams = (addr) => coder.encode(["address"], [addr]);
