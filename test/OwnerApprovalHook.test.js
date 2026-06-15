@@ -7,7 +7,8 @@ describe("OwnerApprovalHook", function () {
   const JOB = 1n;
   const AMOUNT = 1000n;
   const TOKEN = "0x000000000000000000000000000000000000dEaD";
-  const FUTURE = 9_999_999_999n; // year 2286
+  let FUTURE;  // valid (within-window) deadline, set per-test from block time
+  let TOO_FAR; // beyond the hook's MAX_APPROVAL_WINDOW (30 days)
   const PAST = 1n;
 
   const coder = ethers.AbiCoder.defaultAbiCoder();
@@ -39,6 +40,9 @@ describe("OwnerApprovalHook", function () {
     hook = await (await ethers.getContractFactory("OwnerApprovalHook")).deploy(await core.getAddress());
     hookAddr = await hook.getAddress();
     chainId = (await ethers.provider.getNetwork()).chainId;
+    const now = BigInt((await ethers.provider.getBlock("latest")).timestamp);
+    FUTURE = now + 3600n;         // within the 30-day window
+    TOO_FAR = now + 31n * 86400n; // beyond the 30-day window
   });
 
   describe("deployment & metadata", function () {
@@ -88,6 +92,15 @@ describe("OwnerApprovalHook", function () {
       await expect(core.fund(hookAddr, JOB, client.address, fundParams(sig, FUTURE))).to.not.be.reverted;
     });
 
+    it("accepts a smart-contract wallet owner (ERC-1271)", async function () {
+      // Owner is a contract wallet that validates by recovering to `owner`'s EOA.
+      const wallet = await (await ethers.getContractFactory("MockSmartWallet")).deploy(owner.address);
+      const walletAddr = await wallet.getAddress();
+      await core.setBudget(hookAddr, 2n, client.address, TOKEN, AMOUNT, ownerParams(walletAddr));
+      const sig = await signApproval(owner, 2n, AMOUNT, FUTURE);
+      await expect(core.fund(hookAddr, 2n, client.address, fundParams(sig, FUTURE))).to.not.be.reverted;
+    });
+
     it("reverts when the job owner was never registered", async function () {
       const sig = await signApproval(owner, 2n, AMOUNT, FUTURE);
       await expect(core.fund(hookAddr, 2n, client.address, fundParams(sig, FUTURE)))
@@ -98,6 +111,12 @@ describe("OwnerApprovalHook", function () {
       const sig = await signApproval(owner, JOB, AMOUNT, PAST);
       await expect(core.fund(hookAddr, JOB, client.address, fundParams(sig, PAST)))
         .to.be.revertedWithCustomError(hook, "ApprovalExpired");
+    });
+
+    it("reverts when the approval deadline is too far in the future", async function () {
+      const sig = await signApproval(owner, JOB, AMOUNT, TOO_FAR);
+      await expect(core.fund(hookAddr, JOB, client.address, fundParams(sig, TOO_FAR)))
+        .to.be.revertedWithCustomError(hook, "ApprovalWindowTooLong");
     });
 
     it("reverts when someone other than the owner signs", async function () {

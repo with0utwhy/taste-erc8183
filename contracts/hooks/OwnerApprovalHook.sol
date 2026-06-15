@@ -3,32 +3,46 @@ pragma solidity ^0.8.20;
 
 import {BaseERC8183Hook} from "../BaseERC8183Hook.sol";
 import {IERC8183HookMetadata} from "../interfaces/IERC8183HookMetadata.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /// @title OwnerApprovalHook
-/// @notice Profile A policy hook: a job cannot be funded until a designated
-///         owner has approved its budget out-of-band. Approval is presented as
-///         a signature over the job's terms, supplied in `fund` optParams — the
-///         hook holds no approval state of its own and exposes no mutating
-///         functions outside the ERC-8183 callbacks.
-/// @dev    Flow:
-///           1. The owner address is registered once, from `setBudget` optParams
-///              (`abi.encode(owner)`); falls back to the caller if none is given.
-///              An `ApprovalRequested` event signals an off-chain approver.
-///           2. The owner signs the job terms off-chain (no gas):
-///              digest = keccak256(abi.encode(block.chainid, address(this), jobId, budget, deadline)),
-///              wrapped as an EIP-191 personal-sign message.
-///           3. `fund` optParams carry `abi.encode(signature, deadline)`. The hook
-///              recovers the signer and requires it to equal the registered owner
-///              and the deadline to be in the future. A mismatching or missing
-///              signature reverts, blocking the funding.
+/// @notice Profile A (Simple Policy) hook: a job cannot be funded until a
+///         designated owner has approved its budget via an off-chain signature.
+///         No token custody.
 ///
-///         Denial needs no transaction: an unsigned job can never be funded, and
-///         the deadline bounds each signature. Raising the budget via a later
-///         `setBudget` changes the signed digest, so a prior approval no longer
-///         validates — re-approval is required. Every funded job therefore
-///         carries an owner signature; there is no unattested funding path.
+/// USE CASE
+///   An AI agent's human operator gates the agent's spending. The agent can
+///   create and run jobs, but funds only move once the human signs off on the
+///   budget — a human-in-the-loop oversight lane on ERC-8183 with no trusted
+///   intermediary.
+///
+/// FLOW
+///   1. `setBudget` optParams carry `abi.encode(owner)`. The owner is recorded
+///      once (falls back to the caller if none is given) and
+///      `ApprovalRequested(jobId, owner, client, budget)` is emitted for an
+///      off-chain notifier.
+///   2. The owner signs the job terms off-chain (gasless):
+///        digest = keccak256(abi.encode(block.chainid, address(this), jobId, budget, deadline))
+///      as an EIP-191 personal-sign message.
+///   3. `fund` optParams carry `abi.encode(signature, deadline)`. `_preFund`
+///      validates the signature against the recorded owner (an EOA via ECDSA, or
+///      a smart-contract wallet via ERC-1271) with the deadline still in the
+///      future; a missing or invalid signature reverts.
+///
+/// TRUST MODEL
+///   - No approval state and no mutating functions outside the ERC-8183
+///     callbacks; no admin, no upgradeability. Only a valid signature from the
+///     recorded owner — an EOA (ECDSA) or a smart-contract wallet (ERC-1271) —
+///     can unblock funding.
+///   - The owner is locked on first `setBudget` (no later swap). The budget is
+///     bound into the signed digest, so raising it invalidates a prior approval
+///     (no escalation). `block.chainid` + `address(this)` + `jobId` bind the
+///     signature to one job, one hook, one chain (no replay).
+///   - Denial needs no transaction: an unsigned job can never be funded, and the
+///     deadline bounds each signature. The deadline must also fall within a
+///     bounded window (MAX_APPROVAL_WINDOW), so an approval cannot accidentally
+///     be made effectively non-expiring.
 contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata {
     using MessageHashUtils for bytes32;
 
@@ -40,11 +54,16 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata {
 
     mapping(uint256 => Job) private _jobs;
 
+    /// @notice Upper bound on how far ahead an approval deadline may be set, so a
+    ///         signature cannot accidentally be made effectively non-expiring.
+    uint256 private constant MAX_APPROVAL_WINDOW = 30 days;
+
     /// @notice Emitted when a job is registered and awaiting owner approval.
     event ApprovalRequested(uint256 indexed jobId, address indexed owner, address indexed client, uint256 budget);
 
     error OwnerNotRegistered();
     error ApprovalExpired();
+    error ApprovalWindowTooLong();
     error InvalidApprovalSignature();
 
     /// @param erc8183Contract_ The ERC-8183 core contract (or MultiHookRouter) authorized to call this hook.
@@ -94,12 +113,14 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata {
 
         (bytes memory signature, uint256 deadline) = abi.decode(optParams, (bytes, uint256));
         if (block.timestamp > deadline) revert ApprovalExpired();
+        if (deadline > block.timestamp + MAX_APPROVAL_WINDOW) revert ApprovalWindowTooLong();
 
         bytes32 digest = keccak256(
             abi.encode(block.chainid, address(this), jobId, job.budget, deadline)
         ).toEthSignedMessageHash();
 
-        if (ECDSA.recover(digest, signature) != owner) revert InvalidApprovalSignature();
+        // Accepts both EOA (ECDSA) and smart-contract wallet (ERC-1271) owners.
+        if (!SignatureChecker.isValidSignatureNow(owner, digest, signature)) revert InvalidApprovalSignature();
     }
 
     /// @notice Read the approval context for a job.
