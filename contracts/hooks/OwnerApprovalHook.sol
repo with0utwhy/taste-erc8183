@@ -19,7 +19,8 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///
 /// FLOW
 ///   1. `setBudget` optParams carry `abi.encode(owner)`. The owner is recorded
-///      once (falls back to the caller if none is given) and
+///      once from optParams; if none is supplied the job stays owner-less and
+///      cannot be funded (fail-closed). Once an owner is set,
 ///      `ApprovalRequested(jobId, owner, client, budget)` is emitted for an
 ///      off-chain notifier.
 ///   2. The owner signs the job terms off-chain (gasless) as EIP-712 typed data
@@ -42,6 +43,10 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 ///     this chain; `jobId` binds it to one job (no cross-job replay); and the job
 ///     is flagged funded in `_postFund`, so the same approval cannot be replayed
 ///     even if the core permitted a second `fund()` (no same-job replay).
+///   - The owner is designated at `setBudget` by whoever sets the budget; the
+///     hook enforces the owner's signature at `fund` but cannot verify the owner
+///     is distinct from the funder — it defends against funding without the
+///     designated owner's approval, not against a self-dealing caller.
 ///   - The deadline is inclusive (valid while `block.timestamp <= deadline`) and
 ///     bounded: it must be in the future and within `MAX_APPROVAL_WINDOW`, so an
 ///     approval can't accidentally be made effectively non-expiring. Denial needs
@@ -107,15 +112,20 @@ contract OwnerApprovalHook is BaseERC8183Hook, IERC8183HookMetadata, EIP712 {
         Job storage job = _jobs[jobId];
         job.budget = amount;
 
+        // Register the owner once, from optParams. NO fallback: if no owner is
+        // supplied the job stays owner-less and _preFund reverts OwnerNotRegistered
+        // (fail-closed) — the gate never defaults to letting the caller self-approve.
         if (job.owner == address(0)) {
-            address owner;
             if (optParams.length >= 32) {
-                owner = abi.decode(optParams, (address));
+                address owner = abi.decode(optParams, (address));
+                if (owner != address(0)) job.owner = owner;
             }
-            job.owner = owner != address(0) ? owner : caller;
         }
 
-        emit ApprovalRequested(jobId, job.owner, caller, amount);
+        // Only signal an approver once one is registered.
+        if (job.owner != address(0)) {
+            emit ApprovalRequested(jobId, job.owner, caller, amount);
+        }
     }
 
     /// @dev Mark the job funded so its approval signature can't be replayed,

@@ -71,9 +71,12 @@ describe("OwnerApprovalHook", function () {
       expect(job.budget).to.equal(AMOUNT);
     });
 
-    it("falls back to the caller when no owner is supplied", async function () {
+    it("stays owner-less when no owner is supplied (fail-closed)", async function () {
       await core.setBudget(hookAddr, JOB, client.address, TOKEN, AMOUNT, "0x");
-      expect((await hook.jobOf(JOB)).owner).to.equal(client.address);
+      expect((await hook.jobOf(JOB)).owner).to.equal(ethers.ZeroAddress);
+      const sig = await signApproval(owner, JOB, AMOUNT, FUTURE);
+      await expect(core.fund(hookAddr, JOB, client.address, fundParams(sig, FUTURE)))
+        .to.be.revertedWithCustomError(hook, "OwnerNotRegistered");
     });
 
     it("sets the owner only once (no swap after registration)", async function () {
